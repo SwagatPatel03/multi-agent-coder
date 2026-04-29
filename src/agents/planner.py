@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 from pydantic import ValidationError
-from utils.llm_client import _RequestMessage, gemma
+from utils.llm_client import RequestMessage, gemma
 
 from models import TaskPlan
 
@@ -80,7 +80,7 @@ async def run_planner(
     logger.info(f"Planner Agent starting — request: {user_request!r}")
     system_prompt = load_prompt()
 
-    messages: list[_RequestMessage] = [
+    messages: list[RequestMessage] = [
         {"role": "user", "content": build_user_prompt(user_request)}
     ]
     raw_response = ""

@@ -15,32 +15,39 @@ def load_prompt() -> str:
     global _SYSTEM_PROMPT
     if _SYSTEM_PROMPT is None:
         _SYSTEM_PROMPT = (
-            Path(__file__).parent.parent / "prompts" / "coder.txt"
+            Path(__file__).parent.parent / "prompts" / "docs.txt"
         ).read_text()
     return _SYSTEM_PROMPT
 
 
-def extract_code(raw_text: str) -> str | None:
+def extract_content(raw_text: str) -> str | None:
     """
-    Extracts code from <code>...</code> delimiters.
-    Falls back to stripping markdown fences if delimiters are absent.
-    Returns None if no code can be extracted.
+    Extracts content from <content>...</content> delimiters.
+    Falls back to markdown fence extraction, then to bare text
+    if the response looks like code or markdown.
+    Returns None only if no usable content can be found.
     """
-    # Primary: XML-style delimiters (what we instruct the model to use)
-    match = re.search(r"<code>\s*(.*?)\s*</code>", raw_text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-
-    # Fallback 1: markdown code fence with optional language tag
+    # Primary: XML-style delimiters
     match = re.search(
-        r"```(?:python)?\s*(.*?)\s*```", raw_text, re.DOTALL | re.IGNORECASE
+        r"<content>\s*(.*?)\s*</content>",
+        raw_text,
+        re.DOTALL | re.IGNORECASE,
     )
     if match:
         return match.group(1).strip()
 
-    # Fallback 2: assume entire response is code if it looks like Python
+    # Fallback 1: markdown code fence
+    match = re.search(
+        r"```(?:python|markdown|md)?\s*(.*?)\s*```",
+        raw_text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Fallback 2: bare response that looks like code or markdown
     stripped = raw_text.strip()
-    if stripped.startswith(("def ", "class ", "import ", "from ", "#")):
+    if stripped.startswith(("def ", "class ", "import ", "from ", "#", "##", "**")):
         return stripped
 
     return None
@@ -52,6 +59,12 @@ def build_user_prompt(
     current_code: str = "",
     reviewer_feedback: list[str] | None = None,
 ) -> str:
+    # Label changes based on whether target is source code or markdown
+    is_markdown = subtask.file_path.endswith((".md", ".rst", ".txt"))
+    content_label = (
+        "EXISTING MARKDOWN" if is_markdown else "IMPLEMENTATION CODE TO DOCUMENT"
+    )
+
     prompt = f"""
 OVERARCHING GOAL:
 {plan.goal}
@@ -66,26 +79,23 @@ TARGET FILE:
     if current_code and reviewer_feedback:
         issues = "\n".join(f"- {issue}" for issue in reviewer_feedback)
         prompt += (
-            "\n\nCURRENT CODE (needs revision):\n"
-            "<code>\n"
+            f"\n\n{content_label} (needs revision):\n"
+            "<content>\n"
             f"{current_code}\n"
-            "</code>\n\n"
-            "REVIEWER IDENTIFIED THESE SPECIFIC ISSUES — fix only these, do not "
-            "refactor unrelated code:\n"
+            "</content>\n\n"
+            "REVIEWER IDENTIFIED THESE SPECIFIC ISSUES — "
+            "fix only these, do not touch unrelated documentation:\n"
             f"{issues}\n"
         )
     elif current_code:
         prompt += (
-            "\n\nCURRENT CODE (context only — do not modify unless your subtask "
-            "requires it):\n"
-            "<code>\n"
-            f"{current_code}\n"
-            "</code>\n"
+            f"\n\n{content_label}:\n" "<content>\n" f"{current_code}\n" "</content>\n"
         )
+
     return prompt
 
 
-async def run_coder(
+async def run_docs(
     plan: TaskPlan,
     subtask: Subtask,
     current_code: str = "",
@@ -93,27 +103,26 @@ async def run_coder(
     max_retries: int = 2,
 ) -> str:
     """
-    Generates implementation code for a specific subtask.
+    Generates documentation or docstrings for a specific subtask.
 
     Args:
         plan:               The overarching TaskPlan for goal context.
         subtask:            The specific Subtask this agent is responsible for.
-        current_code:       Existing code to revise (passed in on REVISE loops).
-        reviewer_feedback:  Specific issues from the Reviewer agent (revision
-                    loop only).
+        current_code:       The implementation code or existing file to document.
+        reviewer_feedback:  Specific issues from the
+                            Reviewer agent (revision loop only).
         max_retries:        How many self-correction attempts before raising.
 
     Returns:
-        Raw Python code as a string.
+        The fully documented code or markdown content as a string.
 
     Raises:
-        RuntimeError: If the agent fails to return extractable code after all retries.
+        RuntimeError: If extractable content cannot be produced after all retries.
     """
-    logger.info(f"Coder Agent starting — subtask: {subtask.id}")
+    logger.info(f"Docs Agent starting — subtask: {subtask.id}")
     system_prompt = load_prompt()
     user_prompt = build_user_prompt(plan, subtask, current_code, reviewer_feedback)
 
-    # Conversation history for self-correction retries
     messages: list[RequestMessage] = [{"role": "user", "content": user_prompt}]
     raw_response = ""
 
@@ -127,24 +136,23 @@ async def run_coder(
             logger.error(f"LLM call failed on attempt {attempt + 1}: {e}")
             if attempt == max_retries:
                 raise RuntimeError(
-                    f"Coder Agent: LLM call failed after {max_retries + 1} attempts "
-                    f"for subtask '{subtask.id}': {e}"
+                    f"Docs Agent: LLM call failed after {max_retries + 1} "
+                    f"attempts for subtask '{subtask.id}': {e}"
                 ) from e
             continue
 
-        code = extract_code(raw_response)
+        content = extract_content(raw_response)
 
-        if code:
+        if content:
             logger.info(
-                f"Coder Agent succeeded for subtask '{subtask.id}' "
+                f"Docs Agent succeeded for subtask '{subtask.id}' "
                 f"(attempt {attempt + 1}/{max_retries + 1}, "
-                f"{len(code.splitlines())} lines)"
+                f"{len(content.splitlines())} lines)"
             )
-            return code
+            return content
 
-        # Extraction failed — feed the error back for self-correction
         logger.warning(
-            f"Coder Agent: could not extract code on attempt {attempt + 1}. "
+            f"Docs Agent: could not extract content on attempt {attempt + 1}. "
             f"Requesting self-correction."
         )
 
@@ -154,20 +162,19 @@ async def run_coder(
                 {
                     "role": "user",
                     "content": (
-                        "Your response did not contain extractable code. "
-                        "You must wrap your code in <code> and </code> tags "
-                        "with no other text outside them. "
+                        "Your response did not contain extractable content. "
+                        "You must wrap your entire output in <content> and </content> "
+                        "tags with no other text outside them. "
                         "Please rewrite your response now."
                     ),
                 },
             ]
 
-    # Exhausted all attempts
     logger.error(
-        f"Coder Agent failed for subtask '{subtask.id}' after "
+        f"Docs Agent failed for subtask '{subtask.id}' after "
         f"{max_retries + 1} attempts. Last raw response:\n{raw_response}"
     )
     raise RuntimeError(
-        f"Coder Agent could not extract code for subtask '{subtask.id}' "
+        f"Docs Agent could not extract content for subtask '{subtask.id}' "
         f"after {max_retries + 1} attempts."
     )

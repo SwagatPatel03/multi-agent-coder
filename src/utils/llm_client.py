@@ -1,5 +1,6 @@
 import os
-from typing import TypedDict, cast
+import re
+from typing import Literal, TypedDict, cast
 
 import httpx
 from pydantic import BaseModel
@@ -12,7 +13,6 @@ class LLMConfig(BaseModel):
     model: str = "google/gemma-4-31b-it"
     invoke_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
     max_tokens: int = 16384
-    # Lower temperature is critical for coding/JSON generation tasks
     temperature: float = 0.2
     top_p: float = 0.95
 
@@ -29,9 +29,14 @@ class _ResponsePayload(TypedDict):
     choices: list[_ResponseChoice]
 
 
-class _RequestMessage(TypedDict):
-    role: str
+class RequestMessage(TypedDict):
+    role: Literal["user", "assistant"]
     content: str
+
+
+def strip_thinking(text: str) -> str:
+    """Removes <think>...</think> blocks emitted by reasoning models."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 class GemmaClient:
@@ -51,17 +56,14 @@ class GemmaClient:
             "Content-Type": "application/json",
         }
 
-    # Automatically retry up to 3 times with exponential backoff if the API fails
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
     )
-    async def generate(
-        self, system_prompt: str, messages: list[_RequestMessage]
-    ) -> str:
+    async def generate(self, system_prompt: str, messages: list[RequestMessage]) -> str:
         """
         Asynchronously generates a response from the model.
-        Returns the full text string.
+        Strips any <think>...</think> reasoning blocks before returning.
         """
         payload = {
             "model": self.config.model,
@@ -72,8 +74,7 @@ class GemmaClient:
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
             "top_p": self.config.top_p,
-            "stream": False,  # Stream is false because agents need the complete
-            # JSON/code block
+            "stream": False,
             "chat_template_kwargs": {"enable_thinking": True},
         }
 
@@ -81,12 +82,11 @@ class GemmaClient:
             response = await client.post(
                 self.config.invoke_url, headers=self.headers, json=payload
             )
-
-            response.raise_for_status()  # Raise an exception for 4xx/5xx errors
+            response.raise_for_status()
 
             data = cast(_ResponsePayload, response.json())
-            return data["choices"][0]["message"]["content"]
+            raw = data["choices"][0]["message"]["content"]
+            return strip_thinking(raw)
 
 
-# Singleton instance to be imported by your agents
 gemma = GemmaClient()
