@@ -29,6 +29,11 @@ class _ResponsePayload(TypedDict):
     choices: list[_ResponseChoice]
 
 
+class _RequestMessage(TypedDict):
+    role: str
+    content: str
+
+
 class GemmaClient:
     def __init__(self, config: LLMConfig | None = None):
         if config is None:
@@ -48,9 +53,12 @@ class GemmaClient:
 
     # Automatically retry up to 3 times with exponential backoff if the API fails
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
     )
-    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+    async def generate(
+        self, system_prompt: str, messages: list[_RequestMessage]
+    ) -> str:
         """
         Asynchronously generates a response from the model.
         Returns the full text string.
@@ -59,7 +67,7 @@ class GemmaClient:
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                *messages,
             ],
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
