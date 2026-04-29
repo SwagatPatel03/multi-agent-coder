@@ -31,7 +31,7 @@ class ReviewDecision(str, Enum):
 
 
 class ReviewIssue(BaseModel):
-    id: str = Field(..., description="Unique Identifier for Issue")
+    id: str = Field(..., description="Unique identifier for issue")
     description: str
     severity: str = Field(..., description="'blocking' or 'suggestion'")
 
