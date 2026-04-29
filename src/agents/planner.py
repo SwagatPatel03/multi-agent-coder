@@ -1,8 +1,8 @@
 import logging
-import re
 from pathlib import Path
 
 from pydantic import ValidationError
+from utils.helpers import extract_json
 from utils.llm_client import RequestMessage, gemma
 
 from models import TaskPlan
@@ -19,26 +19,6 @@ def load_prompt() -> str:
             Path(__file__).parent.parent / "prompts" / "planner.txt"
         ).read_text()
     return _SYSTEM_PROMPT
-
-
-def extract_json(raw_text: str) -> str | None:
-    """
-    Extracts a JSON object from raw LLM output.
-    Tries multiple strategies in order of reliability.
-    Returns None if no JSON object can be found.
-    """
-    # Primary: JSON inside markdown fence
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-
-    # Fallback: outermost { } pair in the response
-    start = raw_text.find("{")
-    end = raw_text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return raw_text[start : end + 1].strip()
-
-    return None
 
 
 def build_user_prompt(user_request: str) -> str:

@@ -1,14 +1,21 @@
 import re
 
 
-def clean_json_response(raw_text: str) -> str:
-    # Try to extract JSON from a markdown fence first
+def extract_json(raw_text: str) -> str | None:
+    """
+    Extracts a JSON object from raw LLM output.
+    Tries multiple strategies in order of reliability.
+    Returns None if no JSON object can be found.
+    """
+    # Primary: JSON inside markdown fence
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
     if match:
         return match.group(1).strip()
-    # Fall back to finding the outermost { } pair
+
+    # Fallback: outermost { } pair
     start = raw_text.find("{")
     end = raw_text.rfind("}")
-    if start != -1 and end != -1:
+    if start != -1 and end != -1 and end > start:
         return raw_text[start : end + 1].strip()
-    return raw_text.strip()
+
+    return None
